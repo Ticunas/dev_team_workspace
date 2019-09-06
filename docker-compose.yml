@@ -1,0 +1,203 @@
+#######################################################################################################################################
+##                                                                                                                                   ##
+##   Author: Tadman Reis                                                                                                             ##
+##   Email: tadman.f.reis@gmail.com                                                                                                  ##
+##                                                                                                                                   ##
+##                                                                                                                                   ##
+##                                                                                                                                   ##
+##                                                                                                                                   ##
+##                                                                                                                                   ##
+#######################################################################################################################################
+
+version: '3'
+
+services:  
+    proxy:
+        image: jwilder/nginx-proxy:alpine
+        restart: always
+        stdin_open: true
+        tty: true
+        environment: 
+            - DEFAULT_HOST= localhost
+        ports:
+            - "80:80"
+            - "443:443"
+            - "2222:2222"
+        volumes:
+            - ./nginx/nginx.conf:/etc/nginx.conf
+            - ./nginx/conf.d:/etc/nginx/conf.d/
+            - "/etc/nginx/vhost.d"
+            - "/usr/share/nginx/html"
+            - "/var/run/docker.sock:/tmp/docker.sock:ro"
+            - ./nginx/nginx_certs:/etc/nginx/certs
+            # - ./nginx/network:/etc/nginx/network_internal.confs
+
+    # WORDPRESS
+    wordpress:
+        image: wordpress:latest
+        depends_on:
+            - phpmyadmin
+            - db_wp
+            - proxy
+        expose: 
+          ["80"]
+        restart: always
+        environment:
+            - WORDPRESS_DB_HOST=db_wp
+            - WORDPRESS_DB_USER=wp_user
+            - WORDPRESS_DB_PASSWORD=pass@wp
+            - VIRTUAL_HOST= site.localhost
+        links:
+            ["db_wp:db_wp"]
+    
+    #FOR WORDPRESS
+    db_wp:
+        image: mysql:5.7
+        volumes:
+            - wordpress-dbdata:/var/lib/mysql
+        restart: always
+        environment:
+            MYSQL_ROOT_PASSWORD: pass@root
+            MYSQL_DATABASE: wordpress
+            MYSQL_USER: wp_user
+            MYSQL_PASSWORD: pass@wp
+
+    #For WORDPRESS 
+    phpmyadmin:
+        depends_on:
+            - db_wp
+        image: phpmyadmin/phpmyadmin
+        restart: always
+        environment:
+            PMA_HOST: db_wp
+            MYSQL_ROOT_PASSWORD: pass@root
+    #For Rocket chat
+    mongo:
+        image: mongo:3.2
+        restart: unless-stopped
+        # expose: 
+        #     ["27017"]
+        volumes:
+            - rocketchat-dbrocket:/data/db
+            - ./rocketchat/data/dump:/dump
+        command: mongod --smallfiles --oplogSize 128 --replSet rs0 --storageEngine=mmapv1
+        labels:
+            - "traefik.enable=false"
+
+    #ROCKET.CHAT
+    rocketchat:
+        image: rocketchat/rocket.chat:latest
+        depends_on:
+            - mongo
+            - proxy
+            - mongo-init-replica
+        restart: unless-stopped
+        volumes:
+            - ./rocketchat/uploads:/app/uploads
+        expose: 
+            ["3002"]
+        environment:
+            - VIRTUAL_HOST= chat.localhost
+            - VIRTUAL_PORT=3002
+            - PORT=3002
+            - ROOT_URL=http://chat.localhost:3002
+            - MONGO_URL=mongodb://mongo:27017/rocketchat
+            - MONGO_OPLOG_URL=mongodb://mongo:27017/local
+            - MAIL_URL=smtp://smtp.email
+            - ADMIN_USERNAME=admin
+            - ADMIN_PASS=admin
+            - ADMIN_EMAIL=admin@localhost.com
+            # - HTTP_PROXY=http://proxy.domain.com
+            # - HTTPS_PROXY=http://proxy.domain.com
+            # ports:
+            # - 3000:3000
+        labels:
+            - "traefik.backend=rocketchat"
+            - "traefik.frontend.rule=Host: chat.localhost"
+    # hubot:
+    #     image: rocketchat/hubot-rocketchat:latest
+    #     depends_on:
+    #         - rocketchat
+    #     restart: unless-stopped
+    #     expose: 
+    #         ["8080"]
+    #     environment:
+    #         - ROCKETCHAT_URL=chat.localhost:3002
+    #         - ROCKETCHAT_ROOM=GENERAL
+    #         - ROCKETCHAT_USER=bot
+    #         - ROCKETCHAT_PASSWORD=botpassword
+    #         - BOT_NAME=bot
+    #         # you can add more scripts as you'd like here, they need to be installable by npm
+    #         - EXTERNAL_SCRIPTS=hubot-help,hubot-seen,hubot-links,hubot-diagnostics
+    #     labels:
+    #         - "traefik.enable=false"
+    #     volumes:
+    #         - ./hubot/scripts:/home/hubot/scripts
+
+    # this container's job is just run the command to initialize the replica set.
+    # it will run the command and remove himself (it will not stay running)
+    mongo-init-replica:
+        image: mongo:3.2
+        command: 'mongo mongo/rocketchat --eval "rs.initiate({ _id: ''rs0'', members: [ { _id: 0, host: ''localhost:27017'' } ]})"'
+        depends_on:
+            - mongo
+            - proxy
+                #GitLab
+    gitlab:
+        image: 'gitlab/gitlab-ce:latest'
+        depends_on: 
+            - proxy
+        restart: always
+        hostname: 'gitlab'
+        environment:
+            GITLAB_OMNIBUS_CONFIG: |
+                external_url 'http://projects.localhost'
+                gitlab_rails['gitlab_shell_ssh_port'] = 2222
+
+            VIRTUAL_HOST: 'projects.localhost'
+            # - VIRTUAL_PORT=8000
+            GITLAB_HTTPS: 'false'
+            SSL_SELF_SIGNED: 'false'
+
+            GITLAB_BACKUP_SCHEDULE: weekly
+            GITLAB_BACKUP_TIME: 05:00
+
+            SMTP_ENABLED: 'false'
+            # - SMTP_DOMAIN=www.example.com
+            # - SMTP_HOST=smtp.gmail.com
+            # - SMTP_PORT=587
+            # - SMTP_USER=mailer@example.com
+            # - SMTP_PASS=password
+            # - SMTP_STARTTLS=true
+            # - SMTP_AUTHENTICATION=login
+
+            IMAP_ENABLED: 'false'
+            # - IMAP_HOST=imap.gmail.com
+            # - IMAP_PORT=993
+            # - IMAP_USER=mailer@example.com
+            # - IMAP_PASS=password
+            # - IMAP_SSL= true
+            # - IMAP_STARTTLS=false
+            
+        expose: 
+            ["8000", "8443", "2222"]
+        # ports:
+        #   - '8000:8000'
+        #   - '8443:8443'
+        #   - '22:22'
+        volumes:
+            - 'gitlab-config:/etc/gitlab'
+            - 'gitlab-logs:/var/log/gitlab'
+            - 'gitlab-data:/var/opt/gitlab'
+
+
+volumes:
+    nginx_certs:
+    db_data:
+    postgresql:
+    postgresql-data:
+    wordpress-dbdata:
+    rocketchat-dbrocket:
+    gitlab-data:
+    gitlab-logs: 
+    gitlab-config:
